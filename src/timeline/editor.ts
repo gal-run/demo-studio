@@ -83,7 +83,7 @@ export class TimelineEditor {
     const id = `clip-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const fullClip = TimelineClipSchema.parse({ ...clip, id });
     
-    const track = this.state.tracks.find(t => t.id === clip.track || t.clips.length === 0);
+    const track = this.state.tracks.find(t => t.clips.length === 0) || this.state.tracks[0];
     if (!track) {
       throw new Error('Track not found');
     }
