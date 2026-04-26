@@ -1,4 +1,7 @@
 export { Recorder, RecordingConfigSchema, type RecordingConfig } from './core/recorder.js';
+export { DemoScriptRunner, DemoStepSchema, DemoScriptSchema, type DemoStep, type DemoScript } from './core/demo-runner.js';
+export { WindowDetector, type WindowInfo, type WindowDetectionOptions } from './core/window-detector.js';
+export { ScreenCapture, type ScreenshotOptions, type RecordingSession } from './core/screen-capture.js';
 export { ZoomEngine, ZoomConfigSchema, type ZoomConfig, type ZoomRegion, type ZoomKeyframe } from './effects/zoom.js';
 export { CursorEngine, CursorConfigSchema, type CursorConfig, type CursorPosition, type ClickEvent, type SmoothedPosition } from './effects/cursor.js';
 export { OverlayEngine, KeystrokeConfigSchema, TextOverlayConfigSchema, type KeystrokeConfig, type TextOverlayConfig } from './effects/overlay.js';
