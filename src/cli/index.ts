@@ -72,7 +72,7 @@ program
 
     if (options.zoom) {
       const [x, y, scale] = options.zoom.split(',').map(Number);
-      zoomEngine.addZoomRegion({ x, y, scale }, 0, 5);
+      zoomEngine.addZoomRegion({ x, y, scale, duration: 0.5, easing: 'ease-out' }, 0, 5);
       console.log(chalk.gray(`Applied zoom: x=${x}, y=${y}, scale=${scale}`));
     }
 
