@@ -1,4 +1,5 @@
 export { Recorder, RecordingConfigSchema, type RecordingConfig } from './core/recorder.js';
+export { VideoProcessor, type VideoInfo, type ProcessOptions } from './core/video-processor.js';
 export { DemoScriptRunner, DemoStepSchema, DemoScriptSchema, type DemoStep, type DemoScript } from './core/demo-runner.js';
 export { WindowDetector, type WindowInfo, type WindowDetectionOptions } from './core/window-detector.js';
 export { ScreenCapture, type ScreenshotOptions, type RecordingSession } from './core/screen-capture.js';

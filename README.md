@@ -31,33 +31,68 @@ Unlike Screen Studio or other screen recorders, Demo Studio is designed for **AI
 
 ## Quick Start
 
+### 1. Install & Build
+
 ```bash
-# Install dependencies
+git clone https://github.com/Scheduler-Systems/demo-studio.git
+cd demo-studio
 npm install
-
-# Build
 npm run build
+```
 
-# Record a demo
-npm start record --output demo.mp4
+### 2. Check Dependencies
 
-# Start MCP server for AI control
-npm run mcp
+```bash
+node dist/cli/index.js check
+```
+
+### 3. Record Your First Demo
+
+```bash
+# Start recording (Ctrl+C to stop)
+node dist/cli/index.js record -o demo.mp4
+
+# Get video info
+node dist/cli/index.js info demo.mp4
+
+# Convert to GIF
+node dist/cli/index.js gif demo.mp4 -o demo.gif
+```
+
+### 4. Create Scriptable Demo
+
+```bash
+# Create demo script template
+node dist/cli/index.js create "My Demo" -o .
+
+# Edit the JSON file, then run
+node dist/cli/index.js run my-demo.json --dry-run  # Validate
+```
+
+### 5. Use with AI Agents (MCP)
+
+```bash
+# Start MCP server
+node dist/cli/index.js mcp
+
+# Connect from Claude Code or other MCP clients
 ```
 
 ## CLI Commands
 
 ```bash
-# Record screen
-demo-studio record --output demo.mp4 --fps 30
-
-# Edit with effects
-demo-studio edit recording.mp4 --zoom 0.5,0.5,1.5 --cursor-smooth
-
-# Render from script
-demo-studio render demo-script.json --output final.mp4
-
-# Start MCP server
+demo-studio check                           # Check system dependencies
+demo-studio record -o demo.mp4              # Record screen
+demo-studio info video.mp4                  # Get video info
+demo-studio process input.mp4 -o out.mp4    # Process video
+demo-studio gif input.mp4 -o output.gif     # Convert to GIF
+demo-studio thumbnail video.mp4 -o thumb.jpg
+demo-studio windows                         # List windows (macOS)
+demo-studio screenshot -o screen.png        # Take screenshot
+demo-studio create "Demo Name"              # Create demo script
+demo-studio run demo.json                   # Run demo script
+demo-studio mcp                             # Start MCP server
+```
 demo-studio mcp
 ```
 

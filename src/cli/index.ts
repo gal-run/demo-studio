@@ -3,16 +3,12 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { Recorder } from '../core/recorder.js';
+import { VideoProcessor } from '../core/video-processor.js';
 import { DemoScriptRunner } from '../core/demo-runner.js';
 import { WindowDetector } from '../core/window-detector.js';
 import { ScreenCapture } from '../core/screen-capture.js';
-import { ZoomEngine } from '../effects/zoom.js';
-import { CursorEngine } from '../effects/cursor.js';
-import { TTSEngine } from '../tts/index.js';
-import { TimelineEditor } from '../timeline/editor.js';
-import { Renderer } from '../renderer/index.js';
-import { readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { readFile, writeFile, access } from 'fs/promises';
+import { join, basename } from 'path';
 
 const program = new Command();
 
@@ -22,58 +18,82 @@ program
   .version('0.1.0');
 
 program
+  .command('check')
+  .description('Check system dependencies')
+  .action(async () => {
+    console.log(chalk.blue('Checking system dependencies...\n'));
+    
+    const recorder = new Recorder();
+    const deps = await recorder.checkDependencies();
+    
+    console.log(`FFmpeg:  ${deps.ffmpeg ? chalk.green('✓ installed') : chalk.red('✗ not found')}`);
+    console.log(`FFprobe: ${deps.ffprobe ? chalk.green('✓ installed') : chalk.red('✗ not found')}`);
+    
+    if (!deps.ffmpeg || !deps.ffprobe) {
+      console.log(chalk.yellow('\nInstall FFmpeg:'));
+      console.log('  macOS:   brew install ffmpeg');
+      console.log('  Ubuntu:  sudo apt install ffmpeg');
+      console.log('  Windows: choco install ffmpeg');
+    }
+    
+    const processor = new VideoProcessor();
+    
+    console.log(`\nPlatform: ${process.platform}`);
+    console.log(`Node.js:  ${process.version}`);
+  });
+
+program
   .command('record')
   .description('Start screen recording')
   .option('-o, --output <path>', 'Output file path', 'demo.mp4')
   .option('-f, --fps <number>', 'Frames per second', '30')
-  .option('--no-audio', 'Disable audio capture')
+  .option('--audio', 'Enable audio capture')
   .option('--region <x,y,w,h>', 'Capture region')
-  .option('--window <name>', 'Window name to capture')
   .action(async (options) => {
     let region: { x: number; y: number; width: number; height: number } | undefined;
     
-    if (options.window) {
-      const detector = new WindowDetector();
-      const window = await detector.findWindow(options.window);
-      if (!window) {
-        console.error(chalk.red(`Window not found: ${options.window}`));
-        process.exit(1);
-      }
-      region = window.bounds;
-      console.log(chalk.gray(`Capturing window: ${window.name}`));
-    }
-
     if (options.region) {
       const [x, y, w, h] = options.region.split(',').map(Number);
       region = { x, y, width: w, height: h };
+      console.log(chalk.gray(`Recording region: ${x},${y} ${w}x${h}`));
     }
 
     const recorder = new Recorder({
       output: options.output,
       fps: parseInt(options.fps),
-      captureAudio: options.audio,
+      captureAudio: options.audio || false,
       region
     });
 
     recorder.on('started', () => {
       console.log(chalk.green('✓ Recording started'));
-      console.log(chalk.gray('Press Ctrl+C to stop'));
+      console.log(chalk.gray(`Output: ${options.output}`));
+      console.log(chalk.yellow('\nPress Ctrl+C to stop'));
     });
 
     recorder.on('stopped', (data: any) => {
-      console.log(chalk.green(`✓ Recording saved to ${data.outputPath}`));
+      console.log(chalk.green(`\n✓ Recording saved`));
       console.log(chalk.gray(`Duration: ${(data.duration / 1000).toFixed(2)}s`));
+    });
+
+    recorder.on('error', (data: any) => {
+      console.error(chalk.red(`\nError: ${data.error}`));
     });
 
     try {
       await recorder.startRecording();
       
       process.on('SIGINT', async () => {
-        console.log(chalk.yellow('\nStopping recording...'));
-        await recorder.stopRecording();
+        console.log(chalk.yellow('\n\nStopping recording...'));
+        try {
+          await recorder.stopRecording();
+        } catch (e) {
+          console.error(chalk.red('Failed to stop recording'));
+        }
         process.exit(0);
       });
 
+      // Keep process alive
       await new Promise(() => {});
     } catch (error: any) {
       console.error(chalk.red(`Error: ${error.message}`));
@@ -82,34 +102,146 @@ program
   });
 
 program
+  .command('info <video>')
+  .description('Get video information')
+  .action(async (video) => {
+    const processor = new VideoProcessor();
+    
+    try {
+      const info = await processor.getVideoInfo(video);
+      console.log(chalk.bold('\nVideo Information:\n'));
+      console.log(`  Duration: ${info.duration.toFixed(2)}s`);
+      console.log(`  Resolution: ${info.width}x${info.height}`);
+      console.log(`  FPS: ${info.fps.toFixed(2)}`);
+      console.log(`  Codec: ${info.codec}`);
+      console.log(`  Bitrate: ${(info.bitrate / 1000).toFixed(0)} kbps`);
+      console.log(`  Audio: ${info.hasAudio ? 'Yes' : 'No'}`);
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('process <input>')
+  .description('Process a video file')
+  .option('-o, --output <path>', 'Output file path')
+  .option('-s, --start <seconds>', 'Start time', parseFloat)
+  .option('-e, --end <seconds>', 'End time', parseFloat)
+  .option('-r, --resolution <WxH>', 'Output resolution')
+  .option('-f, --fps <number>', 'Output FPS', parseInt)
+  .option('-q, --quality <level>', 'Quality (draft/standard/high/production)', 'high')
+  .option('--mute', 'Remove audio')
+  .action(async (input, options) => {
+    const processor = new VideoProcessor();
+    
+    const output = options.output || `processed-${basename(input)}`;
+    
+    console.log(chalk.blue(`Processing ${input}...`));
+    
+    let resolution: { width: number; height: number } | undefined;
+    if (options.resolution) {
+      const [w, h] = options.resolution.split('x').map(Number);
+      resolution = { width: w, height: h };
+    }
+
+    try {
+      await processor.process({
+        input,
+        output,
+        startTime: options.start,
+        endTime: options.end,
+        resolution,
+        fps: options.fps,
+        quality: options.quality,
+        mute: options.mute
+      });
+      
+      console.log(chalk.green(`\n✓ Saved to ${output}`));
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('gif <input>')
+  .description('Convert video to GIF')
+  .option('-o, --output <path>', 'Output file path')
+  .option('-f, --fps <number>', 'FPS', parseInt, 10)
+  .option('-w, --width <pixels>', 'Width', parseInt, 480)
+  .action(async (input, options) => {
+    const processor = new VideoProcessor();
+    const output = options.output || input.replace(/\.\w+$/, '.gif');
+    
+    console.log(chalk.blue(`Converting to GIF...`));
+    
+    try {
+      await processor.convertToGif(input, output, options.fps, options.width);
+      console.log(chalk.green(`\n✓ Saved to ${output}`));
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('thumbnail <input>')
+  .description('Create video thumbnail')
+  .option('-o, --output <path>', 'Output file path')
+  .option('-t, --time <seconds>', 'Timestamp', parseFloat, 0)
+  .action(async (input, options) => {
+    const processor = new VideoProcessor();
+    const output = options.output || input.replace(/\.\w+$/, '-thumb.jpg');
+    
+    try {
+      await processor.createThumbnail(input, output, options.time);
+      console.log(chalk.green(`✓ Thumbnail saved to ${output}`));
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
   .command('windows')
-  .description('List all available windows for capture')
+  .description('List all available windows')
   .option('-f, --filter <pattern>', 'Filter windows by name')
   .action(async (options) => {
+    if (process.platform !== 'darwin') {
+      console.error(chalk.red('Window detection is only available on macOS'));
+      process.exit(1);
+    }
+
     const detector = new WindowDetector();
     
     console.log(chalk.blue('Detecting windows...\n'));
     
-    const windows = await detector.listWindows({
-      filter: options.filter ? { name: options.filter } : undefined
-    });
+    try {
+      const windows = await detector.listWindows({
+        filter: options.filter ? { name: options.filter } : undefined
+      });
 
-    if (windows.length === 0) {
-      console.log(chalk.yellow('No windows found'));
-      return;
+      if (windows.length === 0) {
+        console.log(chalk.yellow('No windows found'));
+        return;
+      }
+
+      console.log(chalk.bold('Available windows:\n'));
+      
+      for (const win of windows) {
+        console.log(`  ${chalk.cyan(win.id)}`);
+        console.log(`    Name:   ${chalk.white(win.name)}`);
+        console.log(`    Owner:  ${chalk.gray(win.owner)}`);
+        console.log(`    Size:   ${win.bounds.width}x${win.bounds.height}`);
+        console.log();
+      }
+
+      console.log(chalk.gray(`Total: ${windows.length} window(s)`));
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
     }
-
-    console.log(chalk.bold('Available windows:\n'));
-    
-    for (const win of windows) {
-      console.log(`  ${chalk.cyan(win.id)}`);
-      console.log(`    Name:   ${chalk.white(win.name)}`);
-      console.log(`    Owner:  ${chalk.gray(win.owner)}`);
-      console.log(`    Size:   ${win.bounds.width}x${win.bounds.height}`);
-      console.log();
-    }
-
-    console.log(chalk.gray(`Total: ${windows.length} window(s)`));
   });
 
 program
@@ -117,23 +249,14 @@ program
   .description('Capture a screenshot')
   .option('-o, --output <path>', 'Output file path', 'screenshot.png')
   .option('--region <x,y,w,h>', 'Capture region')
-  .option('--window <name>', 'Window name to capture')
-  .option('-f, --format <format>', 'Output format (png, jpg, webp)', 'png')
+  .option('-f, --format <format>', 'Output format (png, jpg)', 'png')
   .action(async (options) => {
     const capture = new ScreenCapture();
     
     try {
       let buffer: Buffer;
       
-      if (options.window) {
-        const detector = new WindowDetector();
-        const window = await detector.findWindow(options.window);
-        if (!window) {
-          console.error(chalk.red(`Window not found: ${options.window}`));
-          process.exit(1);
-        }
-        buffer = await capture.captureWindow(window.id, options.format);
-      } else if (options.region) {
+      if (options.region) {
         const [x, y, w, h] = options.region.split(',').map(Number);
         buffer = await capture.captureRegion(x, y, w, h, options.format);
       } else {
@@ -171,7 +294,7 @@ program
       await runner.initialize(join(process.cwd(), 'demo-output'));
 
       await runner.run((step, total, action) => {
-        process.stdout.write(`\r${chalk.gray(`[${step}/${total}]`)} ${chalk.white(action)}`);
+        process.stdout.write(`\r${chalk.gray(`[${step}/${total}]`)} ${chalk.white(action)}   `);
       });
 
       console.log(chalk.green('\n\n✓ Demo script executed'));
@@ -189,132 +312,6 @@ program
   });
 
 program
-  .command('edit <input>')
-  .description('Edit a recorded video with effects')
-  .option('-o, --output <path>', 'Output file path', 'edited.mp4')
-  .option('--zoom <x,y,scale>', 'Apply zoom effect')
-  .option('--cursor-smooth', 'Apply cursor smoothing')
-  .action(async (input, options) => {
-    console.log(chalk.blue(`Editing ${input}...`));
-    
-    const zoomEngine = new ZoomEngine();
-    const cursorEngine = new CursorEngine();
-    const timeline = new TimelineEditor();
-
-    if (options.zoom) {
-      const [x, y, scale] = options.zoom.split(',').map(Number);
-      zoomEngine.addZoomRegion({ x, y, scale, duration: 0.5, easing: 'ease-out' }, 0, 5);
-      console.log(chalk.gray(`Applied zoom: x=${x}, y=${y}, scale=${scale}`));
-    }
-
-    if (options.cursorSmooth) {
-      cursorEngine.setConfig({ smoothness: 0.8 });
-      console.log(chalk.gray('Applied cursor smoothing'));
-    }
-
-    timeline.addTrack('Main', 'video');
-    timeline.addClip({
-      type: 'video',
-      source: input,
-      startTime: 0,
-      endTime: 30,
-      track: 0
-    });
-
-    console.log(chalk.green(`✓ Video edited, saved to ${options.output}`));
-  });
-
-program
-  .command('render <script>')
-  .description('Render a demo from script file')
-  .option('-o, --output <path>', 'Output file path', 'demo.mp4')
-  .option('-q, --quality <level>', 'Quality level', 'high')
-  .action(async (script, options) => {
-    console.log(chalk.blue(`Rendering demo from ${script}...`));
-
-    try {
-      const scriptContent = await readFile(script, 'utf-8');
-      const demo = JSON.parse(scriptContent);
-
-      const zoomEngine = new ZoomEngine();
-      const cursorEngine = new CursorEngine();
-      const timeline = new TimelineEditor();
-      const ttsEngine = new TTSEngine();
-
-      timeline.addTrack('Video', 'video');
-      timeline.addTrack('Audio', 'audio');
-
-      let currentTime = 0;
-
-      for (const step of demo.steps || []) {
-        switch (step.type) {
-          case 'zoom':
-            zoomEngine.addZoomRegion(
-              { x: step.x, y: step.y, scale: step.scale, duration: step.duration || 0.5, easing: 'ease-out' },
-              currentTime,
-              currentTime + (step.duration || 2)
-            );
-            break;
-
-          case 'click':
-            cursorEngine.addClick(step.x, step.y, currentTime, step.duration || 0.3);
-            if (step.zoom) {
-              zoomEngine.addZoomRegion(
-                { x: step.x / 1920, y: step.y / 1080, scale: step.zoom.scale || 1.5, duration: 0.5, easing: 'ease-out' },
-                currentTime,
-                currentTime + (step.duration || 1)
-              );
-            }
-            break;
-
-          case 'keystroke':
-            timeline.addClip({
-              type: 'text',
-              source: step.keys,
-              startTime: currentTime,
-              endTime: currentTime + (step.duration || 2),
-              track: 0
-            });
-            break;
-
-          case 'voiceover':
-            ttsEngine.addSegment(step.text, currentTime);
-            break;
-        }
-
-        if (step.duration) {
-          currentTime += step.duration;
-        }
-      }
-
-      const renderer = new Renderer(
-        { output: options.output, quality: options.quality },
-        timeline,
-        zoomEngine,
-        cursorEngine
-      );
-
-      await renderer.render((progress) => {
-        process.stdout.write(`\r${chalk.gray('Rendering...')} ${Math.round(progress * 100)}%`);
-      });
-
-      console.log(`\n${chalk.green('✓ Demo rendered to')} ${options.output}`);
-    } catch (error: any) {
-      console.error(chalk.red(`Error: ${error.message}`));
-      process.exit(1);
-    }
-  });
-
-program
-  .command('mcp')
-  .description('Start MCP server for AI agent control')
-  .action(() => {
-    console.log(chalk.blue('Starting MCP server...'));
-    console.log(chalk.gray('Connect via stdio transport'));
-    import('../mcp/server.js');
-  });
-
-program
   .command('create <name>')
   .description('Create a new demo script template')
   .option('-o, --output <path>', 'Output directory', '.')
@@ -329,14 +326,13 @@ program
         quality: 'high'
       },
       recording: {
-        captureAudio: true
+        captureAudio: false
       },
       steps: [
         { type: 'record', duration: 3 },
         { type: 'text', text: 'Welcome to the demo', duration: 2 },
         { type: 'click', x: 960, y: 540, duration: 1, zoom: { scale: 1.5 } },
-        { type: 'keystroke', keys: 'Cmd+K', duration: 2 },
-        { type: 'voiceover', text: 'This is a sample voiceover', duration: 3 }
+        { type: 'keystroke', keys: 'Cmd+K', duration: 2 }
       ]
     };
 
@@ -346,6 +342,15 @@ program
     console.log(chalk.green(`✓ Demo script created: ${outputPath}`));
     console.log(chalk.gray('\nEdit the script and run with:'));
     console.log(chalk.cyan(`  demo-studio run ${outputPath}`));
+  });
+
+program
+  .command('mcp')
+  .description('Start MCP server for AI agent control')
+  .action(() => {
+    console.log(chalk.blue('Starting MCP server...'));
+    console.log(chalk.gray('Connect via stdio transport\n'));
+    import('../mcp/server.js');
   });
 
 program.parse();
