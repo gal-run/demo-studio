@@ -10,48 +10,60 @@ Use when you need to:
 - Create cursor smoothing and click indicators
 - Generate voiceover narration
 - Export polished demo videos
+- List and capture specific windows
+- Run automated demo scripts
 
-## Available Actions
+## Quick Start
 
-### Recording
+```bash
+# Create a new demo script
+demo-studio create "My Demo"
 
-```
-/demo-studio record --output demo.mp4
-```
+# Run the demo script
+demo-studio run my-demo.json
 
-Starts screen recording with configurable FPS and region.
+# List available windows
+demo-studio windows
 
-### Zoom Effects
+# Record a specific window
+demo-studio record --window "Chrome"
 
-```
-/demo-studio zoom --x 0.5 --y 0.5 --scale 1.5 --duration 2
-```
-
-Adds zoom effect centered at position (0.5, 0.5) with 1.5x scale.
-
-### Click Markers
-
-```
-/demo-studio click --x 400 --y 300 --time 5
+# Take a screenshot
+demo-studio screenshot --window "VS Code" -o vscode.png
 ```
 
-Adds animated click indicator at pixel position (400, 300) at 5 seconds.
+## CLI Commands
 
-### Voiceover
+### `demo-studio record`
+Start screen recording with options:
+- `--output, -o` - Output file path
+- `--fps, -f` - Frames per second (default: 30)
+- `--no-audio` - Disable audio capture
+- `--region` - Capture region (x,y,w,h)
+- `--window` - Window name to capture
 
-```
-/demo-studio voiceover --text "Click here to start" --time 0
-```
+### `demo-studio windows`
+List all available windows for capture:
+- `--filter, -f` - Filter windows by name pattern
 
-Generates TTS voiceover at specified time.
+### `demo-studio screenshot`
+Capture a screenshot:
+- `--output, -o` - Output file path
+- `--region` - Capture region
+- `--window` - Window name
+- `--format, -f` - Output format (png, jpg, webp)
 
-### Export
+### `demo-studio run <script>`
+Run a demo script:
+- `--output, -o` - Override output path
+- `--dry-run` - Validate script without executing
 
-```
-/demo-studio export --output final.mp4 --quality high
-```
+### `demo-studio create <name>`
+Create a new demo script template:
+- `--output, -o` - Output directory
 
-Renders final video with all effects applied.
+### `demo-studio mcp`
+Start MCP server for AI agent control
 
 ## MCP Tools
 
@@ -73,45 +85,81 @@ Renders final video with all effects applied.
 ```json
 {
   "name": "Feature Demo",
+  "version": "1.0.0",
+  "output": {
+    "path": "demo.mp4",
+    "resolution": { "width": 1920, "height": 1080 },
+    "fps": 30,
+    "quality": "high"
+  },
+  "recording": {
+    "captureAudio": true
+  },
   "steps": [
-    { "type": "record", "duration": 5 },
-    { "type": "zoom", "x": 0.5, "y": 0.5, "scale": 1.5, "duration": 2 },
-    { "type": "click", "x": 400, "y": 300, "duration": 1 },
+    { "type": "record", "duration": 3 },
+    { "type": "text", "text": "Welcome", "duration": 2 },
+    { "type": "zoom", "x": 960, "y": 540, "scale": 1.5, "duration": 2 },
+    { "type": "click", "x": 400, "y": 300, "duration": 1, "zoom": { "scale": 2 } },
     { "type": "keystroke", "keys": "Cmd+K", "duration": 2 },
-    { "type": "voiceover", "text": "Click the button to start" }
+    { "type": "voiceover", "text": "Click here to start", "duration": 3 }
   ]
 }
 ```
 
-## Example Workflows
+### Step Types
 
-### Quick Demo Recording
+| Type | Properties | Description |
+|------|------------|-------------|
+| `record` | `duration` | Record screen for duration |
+| `click` | `x`, `y`, `duration`, `zoom` | Click animation with optional zoom |
+| `keystroke` | `keys`, `duration`, `position` | Keyboard shortcut overlay |
+| `zoom` | `x`, `y`, `scale`, `duration` | Zoom to region |
+| `voiceover` | `text`, `duration`, `voice` | TTS narration |
+| `text` | `text`, `x`, `y`, `duration` | Text overlay |
+| `wait` | `duration` | Wait for duration |
+| `screenshot` | - | Capture screenshot |
+
+## Example Scripts
+
+See `examples/` directory:
+- `login-flow.json` - Login flow with zoom and voiceover
+- `feature-walkthrough.json` - Multi-feature tour
+- `dashboard-overview.json` - Dashboard overview demo
+- `api-demo.json` - API documentation walkthrough
+- `vscode-extension.json` - VS Code extension demo
+
+## Output Quality
+
+| Level | CRF | Preset | Use Case |
+|-------|-----|--------|----------|
+| draft | 28 | ultrafast | Quick previews |
+| standard | 23 | fast | Internal demos |
+| high | 18 | medium | Published content |
+| production | 12 | slow | Final releases |
+
+## AI Agent Integration
+
+### Via MCP Server
 
 ```bash
-# Start MCP server
 demo-studio mcp
-
-# Via MCP tools:
-1. start_recording -> record demo
-2. stop_recording -> save raw video
-3. add_zoom_region -> highlight key areas
-4. export_video -> render final
 ```
 
-### Automated Demo from Script
-
-```bash
-# Create demo-script.json
-demo-studio render demo-script.json --output demo.mp4
-```
-
-### AI-Agent Driven Demo
-
-The MCP server enables AI agents to:
+Connect AI agents via MCP to:
 1. Control recording programmatically
 2. Add effects at precise timestamps
 3. Generate voiceover from context
 4. Export polished demos automatically
+
+### Programmatic Usage
+
+```typescript
+import { DemoScriptRunner } from '@scheduler-systems/demo-studio';
+
+const runner = await DemoScriptRunner.fromFile('demo.json');
+await runner.run();
+await runner.export('output.mp4');
+```
 
 ## Installation
 
@@ -125,11 +173,14 @@ npm install -g @scheduler-systems/demo-studio
 - FFmpeg (auto-installed)
 - macOS 10.15+ (Windows support planned)
 
-## Output Quality
+## Environment Variables
 
-| Level | CRF | Preset | Use Case |
-|-------|-----|--------|----------|
-| draft | 28 | ultrafast | Quick previews |
-| standard | 23 | fast | Internal demos |
-| high | 18 | medium | Published content |
-| production | 12 | slow | Final releases |
+```bash
+# For TTS voiceover
+OPENAI_API_KEY=sk-...
+ELEVENLABS_API_KEY=...
+```
+
+## License
+
+MIT
