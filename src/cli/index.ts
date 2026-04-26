@@ -2,7 +2,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { Recorder } from '../core/recorder.js';
+import { Recorder, type RecordingProgress } from '../core/recorder.js';
 import { VideoProcessor } from '../core/video-processor.js';
 import { DemoScriptRunner } from '../core/demo-runner.js';
 import { WindowDetector } from '../core/window-detector.js';
@@ -26,7 +26,7 @@ program
     const recorder = new Recorder();
     const deps = await recorder.checkDependencies();
     
-    console.log(`FFmpeg:  ${deps.ffmpeg ? chalk.green('✓ installed') : chalk.red('✗ not found')}`);
+    console.log(`FFmpeg:  ${deps.ffmpeg ? chalk.green('✓ installed') + chalk.gray(` (${deps.version})`) : chalk.red('✗ not found')}`);
     console.log(`FFprobe: ${deps.ffprobe ? chalk.green('✓ installed') : chalk.red('✗ not found')}`);
     
     if (!deps.ffmpeg || !deps.ffprobe) {
@@ -34,12 +34,17 @@ program
       console.log('  macOS:   brew install ffmpeg');
       console.log('  Ubuntu:  sudo apt install ffmpeg');
       console.log('  Windows: choco install ffmpeg');
+      process.exit(1);
     }
     
-    const processor = new VideoProcessor();
+    const resolution = await recorder.getScreenResolution();
+    if (resolution) {
+      console.log(`\nScreen:  ${resolution.width}x${resolution.height}`);
+    }
     
     console.log(`\nPlatform: ${process.platform}`);
     console.log(`Node.js:  ${process.version}`);
+    console.log(chalk.green('\n✓ All dependencies satisfied'));
   });
 
 program
@@ -49,6 +54,8 @@ program
   .option('-f, --fps <number>', 'Frames per second', '30')
   .option('--audio', 'Enable audio capture')
   .option('--region <x,y,w,h>', 'Capture region')
+  .option('-q, --quality <level>', 'Quality (draft/standard/high/production)', 'high')
+  .option('--no-cursor', 'Hide cursor')
   .action(async (options) => {
     let region: { x: number; y: number; width: number; height: number } | undefined;
     
@@ -62,18 +69,41 @@ program
       output: options.output,
       fps: parseInt(options.fps),
       captureAudio: options.audio || false,
-      region
+      region,
+      quality: options.quality,
+      showCursor: options.cursor !== false
     });
 
-    recorder.on('started', () => {
+    let startTime = 0;
+
+    recorder.on('started', (data: any) => {
+      startTime = Date.now();
       console.log(chalk.green('✓ Recording started'));
-      console.log(chalk.gray(`Output: ${options.output}`));
-      console.log(chalk.yellow('\nPress Ctrl+C to stop'));
+      console.log(chalk.gray(`Output: ${data.output}`));
+      console.log(chalk.yellow('\nPress Ctrl+C to stop\n'));
+    });
+
+    recorder.on('progress', (progress: RecordingProgress) => {
+      const elapsed = Math.floor(progress.duration);
+      const mins = Math.floor(elapsed / 60);
+      const secs = elapsed % 60;
+      const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      
+      process.stdout.write(
+        `\r${chalk.cyan('⏺')} ${chalk.white(timeStr)} ` +
+        `${chalk.gray('│')} Frame: ${chalk.white(progress.frame)} ` +
+        `${chalk.gray('│')} FPS: ${chalk.white(progress.fps.toFixed(1))} ` +
+        `${chalk.gray('│')} Size: ${chalk.white(progress.size)}  `
+      );
     });
 
     recorder.on('stopped', (data: any) => {
-      console.log(chalk.green(`\n✓ Recording saved`));
-      console.log(chalk.gray(`Duration: ${(data.duration / 1000).toFixed(2)}s`));
+      const mins = Math.floor(data.duration / 60);
+      const secs = Math.floor(data.duration % 60);
+      console.log(chalk.green(`\n\n✓ Recording saved`));
+      console.log(chalk.gray(`Duration: ${mins}m ${secs}s (${data.duration.toFixed(2)}s)`));
+      console.log(chalk.gray(`Frames: ${data.frames}`));
+      console.log(chalk.gray(`Output: ${data.outputPath}`));
     });
 
     recorder.on('error', (data: any) => {
@@ -87,13 +117,12 @@ program
         console.log(chalk.yellow('\n\nStopping recording...'));
         try {
           await recorder.stopRecording();
-        } catch (e) {
-          console.error(chalk.red('Failed to stop recording'));
+        } catch (e: any) {
+          console.error(chalk.red(`Failed to stop: ${e.message}`));
         }
         process.exit(0);
       });
 
-      // Keep process alive
       await new Promise(() => {});
     } catch (error: any) {
       console.error(chalk.red(`Error: ${error.message}`));
@@ -105,17 +134,62 @@ program
   .command('info <video>')
   .description('Get video information')
   .action(async (video) => {
+    try {
+      await access(video);
+    } catch {
+      console.error(chalk.red(`File not found: ${video}`));
+      process.exit(1);
+    }
+
     const processor = new VideoProcessor();
     
     try {
       const info = await processor.getVideoInfo(video);
-      console.log(chalk.bold('\nVideo Information:\n'));
-      console.log(`  Duration: ${info.duration.toFixed(2)}s`);
-      console.log(`  Resolution: ${info.width}x${info.height}`);
-      console.log(`  FPS: ${info.fps.toFixed(2)}`);
-      console.log(`  Codec: ${info.codec}`);
-      console.log(`  Bitrate: ${(info.bitrate / 1000).toFixed(0)} kbps`);
-      console.log(`  Audio: ${info.hasAudio ? 'Yes' : 'No'}`);
+      console.log(chalk.bold('\nVideo Information\n'));
+      console.log(`  ${chalk.cyan('File:')}      ${video}`);
+      console.log(`  ${chalk.cyan('Duration:')}  ${formatDuration(info.duration)}`);
+      console.log(`  ${chalk.cyan('Resolution:')}${info.width}x${info.height}`);
+      console.log(`  ${chalk.cyan('FPS:')}       ${info.fps.toFixed(2)}`);
+      console.log(`  ${chalk.cyan('Codec:')}     ${info.codec}`);
+      console.log(`  ${chalk.cyan('Bitrate:')}   ${(info.bitrate / 1000).toFixed(0)} kbps`);
+      console.log(`  ${chalk.cyan('Audio:')}     ${info.hasAudio ? 'Yes' : 'No'}`);
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 100);
+  return `${mins}m ${secs}.${ms.toString().padStart(2, '0')}s`;
+}
+
+program
+  .command('trim <input>')
+  .description('Trim video (start and end times in seconds)')
+  .requiredOption('-o, --output <path>', 'Output file path')
+  .option('-s, --start <seconds>', 'Start time', parseFloat)
+  .option('-e, --end <seconds>', 'End time', parseFloat)
+  .option('-q, --quality <level>', 'Quality', 'high')
+  .action(async (input, options) => {
+    const processor = new VideoProcessor();
+    
+    console.log(chalk.blue(`Trimming ${input}...`));
+    if (options.start !== undefined) console.log(chalk.gray(`  Start: ${options.start}s`));
+    if (options.end !== undefined) console.log(chalk.gray(`  End: ${options.end}s`));
+    
+    try {
+      await processor.process({
+        input,
+        output: options.output,
+        startTime: options.start,
+        endTime: options.end,
+        quality: options.quality
+      });
+      
+      console.log(chalk.green(`\n✓ Saved to ${options.output}`));
     } catch (error: any) {
       console.error(chalk.red(`Error: ${error.message}`));
       process.exit(1);
@@ -123,41 +197,42 @@ program
   });
 
 program
-  .command('process <input>')
-  .description('Process a video file')
-  .option('-o, --output <path>', 'Output file path')
-  .option('-s, --start <seconds>', 'Start time', parseFloat)
-  .option('-e, --end <seconds>', 'End time', parseFloat)
-  .option('-r, --resolution <WxH>', 'Output resolution')
-  .option('-f, --fps <number>', 'Output FPS', parseInt)
-  .option('-q, --quality <level>', 'Quality (draft/standard/high/production)', 'high')
-  .option('--mute', 'Remove audio')
+  .command('resize <input>')
+  .description('Resize video')
+  .requiredOption('-o, --output <path>', 'Output file path')
+  .option('-r, --resolution <WxH>', 'Output resolution (e.g., 1280x720)')
+  .option('-w, --width <pixels>', 'Width (keeps aspect ratio)', parseInt)
+  .option('-q, --quality <level>', 'Quality', 'high')
   .action(async (input, options) => {
     const processor = new VideoProcessor();
     
-    const output = options.output || `processed-${basename(input)}`;
-    
-    console.log(chalk.blue(`Processing ${input}...`));
-    
     let resolution: { width: number; height: number } | undefined;
+    
     if (options.resolution) {
       const [w, h] = options.resolution.split('x').map(Number);
       resolution = { width: w, height: h };
+    } else if (options.width) {
+      const info = await processor.getVideoInfo(input);
+      const aspectRatio = info.height / info.width;
+      resolution = { width: options.width, height: Math.round(options.width * aspectRatio) };
     }
 
+    if (!resolution) {
+      console.error(chalk.red('Specify --resolution or --width'));
+      process.exit(1);
+    }
+
+    console.log(chalk.blue(`Resizing to ${resolution.width}x${resolution.height}...`));
+    
     try {
       await processor.process({
         input,
-        output,
-        startTime: options.start,
-        endTime: options.end,
+        output: options.output,
         resolution,
-        fps: options.fps,
-        quality: options.quality,
-        mute: options.mute
+        quality: options.quality
       });
       
-      console.log(chalk.green(`\n✓ Saved to ${output}`));
+      console.log(chalk.green(`\n✓ Saved to ${options.output}`));
     } catch (error: any) {
       console.error(chalk.red(`Error: ${error.message}`));
       process.exit(1);
@@ -174,7 +249,7 @@ program
     const processor = new VideoProcessor();
     const output = options.output || input.replace(/\.\w+$/, '.gif');
     
-    console.log(chalk.blue(`Converting to GIF...`));
+    console.log(chalk.blue(`Converting to GIF (${options.width}px wide, ${options.fps} fps)...`));
     
     try {
       await processor.convertToGif(input, output, options.fps, options.width);
@@ -204,12 +279,38 @@ program
   });
 
 program
+  .command('concat <output>')
+  .description('Concatenate multiple videos')
+  .option('-i, --inputs <files>', 'Input files (comma-separated)')
+  .action(async (output, options) => {
+    if (!options.inputs) {
+      console.error(chalk.red('Specify input files with --inputs'));
+      process.exit(1);
+    }
+
+    const inputs = options.inputs.split(',').map((s: string) => s.trim());
+    const processor = new VideoProcessor();
+    
+    console.log(chalk.blue(`Concatenating ${inputs.length} videos...`));
+    inputs.forEach((f: string) => console.log(chalk.gray(`  ${f}`)));
+    
+    try {
+      await processor.concatenate(inputs, output);
+      console.log(chalk.green(`\n✓ Saved to ${output}`));
+    } catch (error: any) {
+      console.error(chalk.red(`Error: ${error.message}`));
+      process.exit(1);
+    }
+  });
+
+program
   .command('windows')
-  .description('List all available windows')
+  .description('List all available windows (macOS only)')
   .option('-f, --filter <pattern>', 'Filter windows by name')
   .action(async (options) => {
     if (process.platform !== 'darwin') {
       console.error(chalk.red('Window detection is only available on macOS'));
+      console.log(chalk.gray('\nAlternative: Use --region option with record command'));
       process.exit(1);
     }
 
@@ -229,12 +330,15 @@ program
 
       console.log(chalk.bold('Available windows:\n'));
       
-      for (const win of windows) {
-        console.log(`  ${chalk.cyan(win.id)}`);
-        console.log(`    Name:   ${chalk.white(win.name)}`);
-        console.log(`    Owner:  ${chalk.gray(win.owner)}`);
-        console.log(`    Size:   ${win.bounds.width}x${win.bounds.height}`);
+      for (const win of windows.slice(0, 20)) {
+        console.log(`  ${chalk.white(win.name.substring(0, 40))}`);
+        console.log(`    ${chalk.gray('Owner:')}  ${win.owner}`);
+        console.log(`    ${chalk.gray('Size:')}   ${win.bounds.width}x${win.bounds.height}`);
         console.log();
+      }
+
+      if (windows.length > 20) {
+        console.log(chalk.gray(`... and ${windows.length - 20} more`));
       }
 
       console.log(chalk.gray(`Total: ${windows.length} window(s)`));
@@ -272,46 +376,6 @@ program
   });
 
 program
-  .command('run <script>')
-  .description('Run a demo script')
-  .option('-o, --output <path>', 'Output file path')
-  .option('--dry-run', 'Validate script without executing')
-  .action(async (script, options) => {
-    console.log(chalk.blue(`Loading demo script: ${script}`));
-
-    try {
-      const runner = await DemoScriptRunner.fromFile(script);
-      
-      if (options.dryRun) {
-        console.log(chalk.green('✓ Script is valid'));
-        console.log(chalk.gray(`Name: ${runner['config'].name}`));
-        console.log(chalk.gray(`Steps: ${runner['config'].steps.length}`));
-        return;
-      }
-
-      console.log(chalk.blue('\nExecuting demo script...\n'));
-
-      await runner.initialize(join(process.cwd(), 'demo-output'));
-
-      await runner.run((step, total, action) => {
-        process.stdout.write(`\r${chalk.gray(`[${step}/${total}]`)} ${chalk.white(action)}   `);
-      });
-
-      console.log(chalk.green('\n\n✓ Demo script executed'));
-      console.log(chalk.gray(`Total duration: ${runner.getTotalDuration().toFixed(2)}s`));
-
-      if (options.output) {
-        console.log(chalk.blue('\nRendering video...'));
-        await runner.export(options.output);
-        console.log(chalk.green(`✓ Video saved to ${options.output}`));
-      }
-    } catch (error: any) {
-      console.error(chalk.red(`\nError: ${error.message}`));
-      process.exit(1);
-    }
-  });
-
-program
   .command('create <name>')
   .description('Create a new demo script template')
   .option('-o, --output <path>', 'Output directory', '.')
@@ -329,10 +393,11 @@ program
         captureAudio: false
       },
       steps: [
-        { type: 'record', duration: 3 },
-        { type: 'text', text: 'Welcome to the demo', duration: 2 },
-        { type: 'click', x: 960, y: 540, duration: 1, zoom: { scale: 1.5 } },
-        { type: 'keystroke', keys: 'Cmd+K', duration: 2 }
+        { type: 'record', duration: 2 },
+        { type: 'text', text: 'Welcome', duration: 1.5 },
+        { type: 'click', x: 960, y: 540, duration: 0.5, zoom: { scale: 1.5 } },
+        { type: 'keystroke', keys: 'Cmd+K', duration: 1.5 },
+        { type: 'zoom', x: 960, y: 540, scale: 1, duration: 0.5 }
       ]
     };
 
@@ -340,8 +405,48 @@ program
     await writeFile(outputPath, JSON.stringify(template, null, 2));
     
     console.log(chalk.green(`✓ Demo script created: ${outputPath}`));
-    console.log(chalk.gray('\nEdit the script and run with:'));
-    console.log(chalk.cyan(`  demo-studio run ${outputPath}`));
+    console.log(chalk.gray('\nEdit and run with:'));
+    console.log(chalk.cyan(`  demo-studio run ${outputPath} --dry-run`));
+  });
+
+program
+  .command('run <script>')
+  .description('Run a demo script')
+  .option('-o, --output <path>', 'Output file path')
+  .option('--dry-run', 'Validate script without executing')
+  .action(async (script, options) => {
+    console.log(chalk.blue(`Loading: ${script}`));
+
+    try {
+      const runner = await DemoScriptRunner.fromFile(script);
+      
+      if (options.dryRun) {
+        console.log(chalk.green('\n✓ Script is valid\n'));
+        console.log(`Name:     ${runner['config'].name}`);
+        console.log(`Steps:    ${runner['config'].steps.length}`);
+        console.log(`Output:   ${runner['config'].output?.path || 'demo.mp4'}`);
+        return;
+      }
+
+      console.log(chalk.blue('\nExecuting...\n'));
+
+      await runner.initialize(join(process.cwd(), 'demo-output'));
+
+      await runner.run((step, total, action) => {
+        console.log(`  [${step}/${total}] ${action}`);
+      });
+
+      console.log(chalk.green(`\n✓ Completed (${runner.getTotalDuration().toFixed(1)}s)`));
+
+      if (options.output) {
+        console.log(chalk.blue('\nRendering...'));
+        await runner.export(options.output);
+        console.log(chalk.green(`✓ Saved to ${options.output}`));
+      }
+    } catch (error: any) {
+      console.error(chalk.red(`\nError: ${error.message}`));
+      process.exit(1);
+    }
   });
 
 program
