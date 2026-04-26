@@ -2,16 +2,32 @@
 
 AI-powered software demo video recorder. Create polished demo videos with zoom effects, cursor smoothing, and voiceover - controllable by AI agents via MCP.
 
+[![CI](https://github.com/Scheduler-Systems/demo-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Scheduler-Systems/demo-studio/actions/workflows/ci.yml)
+[![npm version](https://badge.fury.io/js/%40scheduler-systems%2Fdemo-studio.svg)](https://badge.fury.io/js/%40scheduler-systems%2Fdemo-studio)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## Why Demo Studio?
+
+Unlike Screen Studio or other screen recorders, Demo Studio is designed for **AI agent control** and **automated demo creation**:
+
+- **MCP Integration**: Control recording from AI agents (Claude, Codex, etc.)
+- **Scriptable Demos**: Define complete demo flows in JSON
+- **Programmatic API**: Full TypeScript API for building custom workflows
+- **Window Detection**: Automatically detect and capture specific windows
+- **Post-Processing**: Built-in effects engine for zoom, cursor smoothing, overlays
+
 ## Features
 
 - **Screen Recording**: High-quality capture with configurable FPS and resolution
-- **Smart Zoom**: Auto-zoom on clicks, configurable zoom regions
+- **Smart Zoom**: Auto-zoom on clicks, configurable zoom regions with easing
 - **Cursor Smoothing**: Smooth cursor movements between clicks
 - **Keystroke Overlay**: Display keyboard shortcuts on screen
-- **TTS Voiceover**: Auto-generate narration from script
-- **Timeline Editor**: Visual editor for trimming and arranging clips
+- **TTS Voiceover**: Auto-generate narration (OpenAI, ElevenLabs)
+- **Timeline Editor**: Multi-track editor for trimming and arranging clips
 - **MCP Integration**: Control recording from AI agents
 - **Scriptable Demos**: Define demo flows in JSON/YAML
+- **Window Detection**: List, find, and capture specific windows
+- **Screenshot Capture**: Region, window, and full-screen capture
 
 ## Quick Start
 
