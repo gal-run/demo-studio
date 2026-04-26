@@ -1,8 +1,11 @@
-import { spawn } from 'child_process';
-import { mkdir, writeFile, unlink, access } from 'fs/promises';
+import { spawn, exec } from 'child_process';
+import { promisify } from 'util';
+import { mkdir, writeFile, unlink, access, stat } from 'fs/promises';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { z } from 'zod';
+
+const execAsync = promisify(exec);
 
 const RecordingConfigSchema = z.object({
   output: z.string().default('output.mp4'),
@@ -18,7 +21,9 @@ const RecordingConfigSchema = z.object({
     y: z.number(),
     width: z.number(),
     height: z.number()
-  }).optional()
+  }).optional(),
+  showCursor: z.boolean().default(true),
+  quality: z.enum(['draft', 'standard', 'high', 'production']).default('high')
 });
 
 type RecordingConfig = z.infer<typeof RecordingConfigSchema>;
@@ -29,12 +34,22 @@ interface RecordingState {
   startTime: number | null;
   outputDir: string;
   config: RecordingConfig;
+  frameCount: number;
+}
+
+export interface RecordingProgress {
+  frame: number;
+  fps: number;
+  bitrate: string;
+  duration: number;
+  size: string;
 }
 
 export class Recorder {
   private state: RecordingState;
   private ffmpegProcess: ReturnType<typeof spawn> | null = null;
   private eventListeners: Map<string, Set<Function>> = new Map();
+  private lastProgress: RecordingProgress | null = null;
 
   constructor(config: Partial<RecordingConfig> = {}) {
     this.state = {
@@ -42,28 +57,38 @@ export class Recorder {
       isPaused: false,
       startTime: null,
       outputDir: '',
+      frameCount: 0,
       config: RecordingConfigSchema.parse(config)
     };
   }
 
-  async checkDependencies(): Promise<{ ffmpeg: boolean; ffprobe: boolean }> {
-    const checkCommand = async (cmd: string): Promise<boolean> => {
-      try {
-        const result = await new Promise<boolean>((resolve) => {
-          const proc = spawn(cmd, ['-version']);
-          proc.on('close', (code) => resolve(code === 0));
-          proc.on('error', () => resolve(false));
-        });
-        return result;
-      } catch {
-        return false;
-      }
-    };
+  async checkDependencies(): Promise<{ ffmpeg: boolean; ffprobe: boolean; version: string | null }> {
+    try {
+      const { stdout } = await execAsync('ffmpeg -version');
+      const versionMatch = stdout.match(/ffmpeg version (\S+)/);
+      return {
+        ffmpeg: true,
+        ffprobe: true,
+        version: versionMatch ? versionMatch[1] : null
+      };
+    } catch {
+      return { ffmpeg: false, ffprobe: false, version: null };
+    }
+  }
 
-    return {
-      ffmpeg: await checkCommand('ffmpeg'),
-      ffprobe: await checkCommand('ffprobe')
-    };
+  async getScreenResolution(): Promise<{ width: number; height: number } | null> {
+    if (process.platform === 'darwin') {
+      try {
+        const { stdout } = await execAsync(
+          `osascript -e 'tell application "Finder" to get bounds of window of desktop'`
+        );
+        const [x, y, width, height] = stdout.trim().split(', ').map(Number);
+        return { width, height };
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
 
   async initialize(): Promise<void> {
@@ -78,15 +103,21 @@ export class Recorder {
 
     const deps = await this.checkDependencies();
     if (!deps.ffmpeg) {
-      throw new Error('FFmpeg is not installed. Please install FFmpeg to continue.');
+      throw new Error(
+        'FFmpeg is not installed.\n' +
+        'Install with:\n' +
+        '  macOS:   brew install ffmpeg\n' +
+        '  Ubuntu:  sudo apt install ffmpeg\n' +
+        '  Windows: choco install ffmpeg'
+      );
     }
 
     await this.initialize();
 
-    const { fps, resolution, captureAudio, captureMicrophone, region } = this.state.config;
-    const args = this.buildFFmpegArgs(fps, resolution, region, captureAudio, captureMicrophone);
+    const { fps, captureAudio, captureMicrophone, region, showCursor, quality } = this.state.config;
+    const args = this.buildFFmpegArgs(fps, region, captureAudio, captureMicrophone, showCursor, quality);
 
-    console.error('Starting FFmpeg with args:', args.join(' '));
+    console.error('Starting FFmpeg...');
 
     this.ffmpegProcess = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'pipe'] });
     this.state.isRecording = true;
@@ -94,12 +125,7 @@ export class Recorder {
 
     this.ffmpegProcess.stderr?.on('data', (data) => {
       const msg = data.toString();
-      if (msg.includes('frame=')) {
-        const frameMatch = msg.match(/frame=\s*(\d+)/);
-        if (frameMatch) {
-          this.emit('frame', { frame: parseInt(frameMatch[1]) });
-        }
-      }
+      this.parseProgress(msg);
       this.emit('log', { message: msg });
     });
 
@@ -109,47 +135,80 @@ export class Recorder {
       this.state.isRecording = false;
     });
 
-    this.ffmpegProcess.on('close', (code) => {
+    this.ffmpegProcess.on('close', (code, signal) => {
       this.state.isRecording = false;
-      if (code !== 0 && code !== 255) {
+      if (code !== 0 && code !== 255 && signal !== 'SIGINT') {
         this.emit('error', { error: `FFmpeg exited with code ${code}` });
       }
     });
 
-    this.emit('started', { timestamp: this.state.startTime });
+    this.emit('started', { 
+      timestamp: this.state.startTime,
+      output: this.state.config.output
+    });
+  }
+
+  private parseProgress(msg: string): void {
+    const frameMatch = msg.match(/frame=\s*(\d+)/);
+    const fpsMatch = msg.match(/fps=\s*([\d.]+)/);
+    const bitrateMatch = msg.match(/bitrate=\s*([\d.]+\s*\w+\/s)/);
+    const sizeMatch = msg.match(/size=\s*(\d+\w+)/);
+    const timeMatch = msg.match(/time=\s*([\d:.]+)/);
+
+    if (frameMatch) {
+      this.state.frameCount = parseInt(frameMatch[1]);
+      
+      const duration = this.state.startTime 
+        ? (Date.now() - this.state.startTime) / 1000 
+        : 0;
+
+      this.lastProgress = {
+        frame: this.state.frameCount,
+        fps: fpsMatch ? parseFloat(fpsMatch[1]) : 0,
+        bitrate: bitrateMatch ? bitrateMatch[1] : '0 kbps',
+        duration,
+        size: sizeMatch ? sizeMatch[1] : '0kB'
+      };
+
+      this.emit('progress', this.lastProgress);
+    }
   }
 
   private buildFFmpegArgs(
     fps: number,
-    resolution: { width: number; height: number },
     region?: { x: number; y: number; width: number; height: number },
     captureAudio: boolean = false,
-    captureMicrophone: boolean = false
+    captureMicrophone: boolean = false,
+    showCursor: boolean = true,
+    quality: string = 'high'
   ): string[] {
+    const qualityPresets: Record<string, { crf: number; preset: string }> = {
+      draft: { crf: 28, preset: 'ultrafast' },
+      standard: { crf: 23, preset: 'fast' },
+      high: { crf: 18, preset: 'medium' },
+      production: { crf: 12, preset: 'slow' }
+    };
+
+    const { crf, preset } = qualityPresets[quality] || qualityPresets.high;
     const args: string[] = ['-y'];
 
     if (process.platform === 'darwin') {
-      // macOS: Use avfoundation
       args.push('-f', 'avfoundation');
       
-      // Set capture region
-      if (region) {
-        args.push('-capture_cursor', '1');
-        args.push('-i', `1`);
-        args.push('-filter:v', `crop=${region.width}:${region.height}:${region.x}:${region.y}`);
-      } else {
-        args.push('-capture_cursor', '1');
-        args.push('-i', '1');
+      if (!showCursor) {
+        args.push('-capture_cursor', '0');
       }
       
-      // Audio input
-      if (captureAudio || captureMicrophone) {
-        args.unshift('-f', 'avfoundation');
+      args.push('-i', '1');
+      
+      if (region) {
+        args.push('-filter:v', `crop=${region.width}:${region.height}:${region.x}:${region.y}`);
       }
     } else if (process.platform === 'linux') {
       args.push('-f', 'x11grab');
-      args.push('-video_size', `${region?.width || resolution.width}x${region?.height || resolution.height}`);
+      args.push('-video_size', `${region?.width || 1920}x${region?.height || 1080}`);
       args.push('-framerate', String(fps));
+      args.push('-draw_cursor', showCursor ? '1' : '0');
       args.push('-i', region ? `:0.0+${region.x},${region.y}` : ':0.0');
     } else if (process.platform === 'win32') {
       args.push('-f', 'gdigrab');
@@ -160,12 +219,12 @@ export class Recorder {
     args.push('-r', String(fps));
     args.push('-pix_fmt', 'yuv420p');
     args.push('-c:v', 'libx264');
-    args.push('-preset', 'ultrafast');
-    args.push('-crf', '18');
+    args.push('-preset', preset);
+    args.push('-crf', String(crf));
     args.push('-tune', 'zerolatency');
     args.push('-movflags', '+faststart');
 
-    if (captureAudio) {
+    if (captureAudio || captureMicrophone) {
       args.push('-c:a', 'aac');
       args.push('-b:a', '192k');
     }
@@ -183,22 +242,27 @@ export class Recorder {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.ffmpegProcess?.kill('SIGKILL');
-        reject(new Error('FFmpeg did not stop gracefully'));
+        reject(new Error('FFmpeg did not stop in time'));
       }, 10000);
 
       this.ffmpegProcess!.on('close', (code) => {
         clearTimeout(timeout);
         this.state.isRecording = false;
-        const duration = Date.now() - (this.state.startTime || 0);
+        const duration = this.state.startTime 
+          ? (Date.now() - this.state.startTime) / 1000 
+          : 0;
+        
         this.emit('stopped', {
           outputPath: this.state.config.output,
           duration,
+          frames: this.state.frameCount,
           code
         });
+        
         resolve(this.state.config.output);
       });
 
-      // Send 'q' to stop recording gracefully
+      // Try graceful stop first
       if (this.ffmpegProcess!.stdin?.writable) {
         this.ffmpegProcess!.stdin.write('q');
       } else {
@@ -223,6 +287,10 @@ export class Recorder {
     this.ffmpegProcess?.kill('SIGCONT');
     this.state.isPaused = false;
     this.emit('resumed', { timestamp: Date.now() });
+  }
+
+  getProgress(): RecordingProgress | null {
+    return this.lastProgress;
   }
 
   on(event: string, callback: Function): void {
@@ -267,6 +335,10 @@ export class Recorder {
       throw new Error('Cannot change config while recording');
     }
     this.state.config = RecordingConfigSchema.parse({ ...this.state.config, ...config });
+  }
+
+  getConfig(): RecordingConfig {
+    return { ...this.state.config };
   }
 }
 
