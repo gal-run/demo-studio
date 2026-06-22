@@ -4,7 +4,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/gal-run/demo-studio-oss.git
+git clone https://github.com/gal-run/demo-studio.git
 cd demo-studio
 
 # Install dependencies
