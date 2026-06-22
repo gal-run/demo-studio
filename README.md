@@ -2,7 +2,7 @@
 
 AI-powered software demo video recorder. Create polished demo videos with zoom effects, cursor smoothing, and voiceover - controllable by AI agents via MCP.
 
-[![CI](https://github.com/gal-run/demo-studio-oss/actions/workflows/ci.yml/badge.svg)](https://github.com/gal-run/demo-studio-oss/actions/workflows/ci.yml)
+[![CI](https://github.com/gal-run/demo-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/gal-run/demo-studio/actions/workflows/ci.yml)
 [![npm version](https://badge.fury.io/js/%40gal-run%2Fdemo-studio.svg)](https://badge.fury.io/js/%40gal-run%2Fdemo-studio)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -34,7 +34,7 @@ Unlike Screen Studio or other screen recorders, Demo Studio is designed for **AI
 ### 1. Install & Build
 
 ```bash
-git clone https://github.com/gal-run/demo-studio-oss.git
+git clone https://github.com/gal-run/demo-studio.git
 cd demo-studio
 npm install
 npm run build
